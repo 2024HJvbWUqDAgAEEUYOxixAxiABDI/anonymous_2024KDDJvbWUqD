@@ -12,6 +12,64 @@ from manifolds.lorentz import Lorentz
 from geoopt import ManifoldParameter
 from gnns import GraphConv
 
+
+
+class HypFormer(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels,
+                 trans_num_layers=1, trans_num_heads=1, trans_dropout=0.5, trans_use_bn=True, trans_use_residual=True,
+                 trans_use_weight=True, trans_use_act=True,
+                 gnn_num_layers=1, gnn_dropout=0.5, gnn_use_weight=True, gnn_use_init=False, gnn_use_bn=True,
+                 gnn_use_residual=True, gnn_use_act=True,
+                 use_graph=True, graph_weight=0.5, aggregate='add', args=None):
+        super().__init__()
+        self.manifold_in = Lorentz(k=float(args.k_in))
+        self.manifold_hidden = Lorentz(k=float(args.k_out))
+        self.manifold_out = Lorentz(k=float(args.k_out))
+        self.in_channels = in_channels
+        self.hidden_channels = hidden_channels
+        self.out_channels = out_channels
+
+        self.trans_conv = TransConv(self.manifold_in, self.manifold_hidden, self.manifold_out, in_channels, hidden_channels, trans_num_layers, trans_num_heads, trans_dropout, trans_use_bn, trans_use_residual, trans_use_weight, trans_use_act, args)
+        self.graph_conv = GraphConv(in_channels, hidden_channels, gnn_num_layers, gnn_dropout, gnn_use_bn, gnn_use_residual, gnn_use_weight, gnn_use_init, gnn_use_act)
+        self.use_graph = use_graph
+        self.graph_weight = graph_weight
+
+        self.aggregate = aggregate
+        self.use_edge_loss = False
+        self.gnn_use_bn = gnn_use_bn
+
+        if self.aggregate == 'add':
+            self.decode_trans = nn.Linear(self.hidden_channels + 1, self.out_channels)
+            self.decode_graph = nn.Linear(self.hidden_channels, self.out_channels)
+        elif self.aggregate == 'cat':
+            self.decode_trans = nn.Linear(2*self.hidden_channels + 1, self.out_channels)
+            self.decode_graph = nn.Linear(self.hidden_channels, self.out_channels)           
+        else:
+            raise ValueError(f'Invalid aggregate type:{self.aggregate}')
+
+    def forward(self, x, edge_index):
+        x1 = self.trans_conv(x)
+        if self.use_graph:
+            x2 = self.graph_conv(x, edge_index)
+            if self.aggregate == 'add':
+                x = (1-self.graph_weight)*self.decode_trans(x1) + self.graph_weight*self.decode_graph(x2)
+            else:
+                x = torch.cat((x1, x2), dim=-1)
+                x = self.decode_trans(x)
+        else:
+            x = self.decode_trans(self.manifold_out.logmap0(x1)[...,1:])
+        return x
+
+    def get_attentions(self, x):
+        attns = self.trans_conv.get_attentions(x)  # [layer num, N, N]
+        return attns
+
+    def reset_parameters(self):
+        # self.trans_conv.reset_parameters()
+        if self.use_graph:
+            self.graph_conv.reset_parameters()
+        # self.fc.reset_parameters()
+        
 class TransConvLayer(nn.Module):
     def __init__(self, manifold, in_channels, out_channels, num_heads, use_weight=True, args=None):
         super().__init__()
@@ -203,58 +261,3 @@ class TransConv(nn.Module):
             layer_.append(x)
         return torch.stack(attentions, dim=0)  # [layer num, N, N]
 
-class HypFormer(nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels,
-                 trans_num_layers=1, trans_num_heads=1, trans_dropout=0.5, trans_use_bn=True, trans_use_residual=True,
-                 trans_use_weight=True, trans_use_act=True,
-                 gnn_num_layers=1, gnn_dropout=0.5, gnn_use_weight=True, gnn_use_init=False, gnn_use_bn=True,
-                 gnn_use_residual=True, gnn_use_act=True,
-                 use_graph=True, graph_weight=0.5, aggregate='add', args=None):
-        super().__init__()
-        self.manifold_in = Lorentz(k=float(args.k_in))
-        self.manifold_hidden = Lorentz(k=float(args.k_out))
-        self.manifold_out = Lorentz(k=float(args.k_out))
-        self.in_channels = in_channels
-        self.hidden_channels = hidden_channels
-        self.out_channels = out_channels
-
-        self.trans_conv = TransConv(self.manifold_in, self.manifold_hidden, self.manifold_out, in_channels, hidden_channels, trans_num_layers, trans_num_heads, trans_dropout, trans_use_bn, trans_use_residual, trans_use_weight, trans_use_act, args)
-        self.graph_conv = GraphConv(in_channels, hidden_channels, gnn_num_layers, gnn_dropout, gnn_use_bn, gnn_use_residual, gnn_use_weight, gnn_use_init, gnn_use_act)
-        self.use_graph = use_graph
-        self.graph_weight = graph_weight
-
-        self.aggregate = aggregate
-        self.use_edge_loss = False
-        self.gnn_use_bn = gnn_use_bn
-
-        if self.aggregate == 'add':
-            self.decode_trans = nn.Linear(self.hidden_channels, self.out_channels)
-            self.decode_graph = nn.Linear(self.hidden_channels, self.out_channels)
-        elif self.aggregate == 'cat':
-            self.decode_trans = nn.Linear(2*self.hidden_channels, self.out_channels)
-            self.decode_graph = nn.Linear(self.hidden_channels, self.out_channels)           
-        else:
-            raise ValueError(f'Invalid aggregate type:{self.aggregate}')
-
-    def forward(self, x, edge_index):
-        x1 = self.trans_conv(x)
-        if self.use_graph:
-            x2 = self.graph_conv(x, edge_index)
-            if self.aggregate == 'add':
-                x = (1-self.graph_weight)*self.decode_trans(self.manifold_out.logmap0(x1)[...,1:]) + self.graph_weight*self.decode_graph(x2)
-            else:
-                x = torch.cat((self.manifold_out.logmap0(x1)[...,1:], x2), dim=-1)
-                x = self.decode_trans(x)
-        else:
-            x = self.decode_trans(self.manifold_out.logmap0(x1)[...,1:])
-        return x
-
-    def get_attentions(self, x):
-        attns = self.trans_conv.get_attentions(x)  # [layer num, N, N]
-        return attns
-
-    def reset_parameters(self):
-        # self.trans_conv.reset_parameters()
-        if self.use_graph:
-            self.graph_conv.reset_parameters()
-        # self.fc.reset_parameters()
