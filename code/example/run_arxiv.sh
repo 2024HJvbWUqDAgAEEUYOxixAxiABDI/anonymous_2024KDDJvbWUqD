@@ -1,0 +1,28 @@
+python main.py \
+--method hyperformer \
+--dataset ogbn-arxiv \
+--metric acc \
+--lr 0.001 \
+--hyp_lr 0.001 \
+--hidden_channels 256 \
+--gnn_num_layers 3 \
+--gnn_dropout 0.4 \
+--hyp_weight_decay 0. \
+--gnn_use_residual \
+--gnn_use_weight \
+--gnn_use_bn \
+--gnn_use_act \
+--trans_num_layers 1 \
+--trans_dropout 0. \
+--weight_decay 0.0 \
+--trans_use_residual \
+--trans_use_weight \
+--use_graph \
+--graph_weight 0.5 \
+--seed 123 \
+--runs 1 \
+--epochs 1000 \
+--eval_step 1 \
+--device 0 \
+--k_in 1.0 \
+--data_dir $data_dir
